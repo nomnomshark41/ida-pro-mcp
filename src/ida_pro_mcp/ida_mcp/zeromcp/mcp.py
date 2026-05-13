@@ -234,6 +234,10 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
     server_version = "zeromcp/1.3.0"
     error_message_format = "%(code)d - %(message)s"
     error_content_type = "text/plain"
+    # When the HTTP server is single-threaded, idle keep-alive connections
+    # block all new connections.  A short timeout lets the server reclaim
+    # the socket and accept reconnecting clients.
+    timeout = 30
 
     def __init__(self, request, client_address, server):
         self.mcp_server: "McpServer" = getattr(server, "mcp_server")
@@ -431,6 +435,7 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
                 del self.mcp_server._sse_connections[conn.session_id]
 
     def _handle_sse_post(self, body: bytes):
+        self.close_connection = True
         query_params = parse_qs(urlparse(self.path).query)
         session_id = query_params.get("session", [None])[0]
         if session_id is None:
@@ -478,6 +483,11 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle_mcp_post(self, body: bytes):
+        # Streamable HTTP: each request/response is independent.  Close the
+        # connection after responding so a single-threaded server can accept
+        # new connections immediately instead of blocking in readline().
+        self.close_connection = True
+
         request_method: str | None = None
         try:
             parsed = json.loads(body)
@@ -538,6 +548,7 @@ class McpHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             if mcp_session_id is not None:
                 self.send_header("Mcp-Session-Id", mcp_session_id)
             self.send_cors_headers()

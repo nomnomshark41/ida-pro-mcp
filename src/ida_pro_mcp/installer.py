@@ -32,6 +32,7 @@ except ImportError:
 MCP_SERVER_NAME = "ida-pro-mcp"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 SERVER_SCRIPT = os.path.join(SCRIPT_DIR, "server.py")
+SUPERVISOR_SCRIPT = os.path.join(SCRIPT_DIR, "idalib_supervisor.py")
 IDA_PLUGIN_PKG = os.path.join(SCRIPT_DIR, "ida_mcp")
 IDA_PLUGIN_LOADER = os.path.join(SCRIPT_DIR, "ida_mcp.py")
 IDA_HOST = "127.0.0.1"
@@ -161,6 +162,30 @@ def generate_mcp_config(*, client_name: str, transport: str = "stdio"):
     if client_name == "Antigravity IDE":
         return {"type": "http", "serverUrl": force_mcp_path(transport_url)}
     return {"type": "http", "url": force_mcp_path(transport_url)}
+
+
+def generate_headless_mcp_config(*, client_name: str):
+    if client_name == "Opencode":
+        mcp_config = {
+            "type": "local",
+            "command": [
+                get_python_executable(),
+                SUPERVISOR_SCRIPT,
+                "--stdio",
+            ],
+        }
+    else:
+        mcp_config = {
+            "command": get_python_executable(),
+            "args": [
+                SUPERVISOR_SCRIPT,
+                "--stdio",
+            ],
+        }
+    env = {}
+    if copy_python_env(env):
+        mcp_config["env"] = env
+    return mcp_config
 
 
 def print_mcp_config():
@@ -339,6 +364,7 @@ def install_mcp_servers(
     quiet: bool = False,
     only: list[str] | None = None,
     project: bool = False,
+    headless: bool = False,
 ):
     configs, special_json_structures = _get_scope_config_spec(project=project)
     if not configs:
@@ -398,10 +424,15 @@ def install_mcp_servers(
                 continue
             del mcp_servers[MCP_SERVER_NAME]
         else:
-            mcp_servers[MCP_SERVER_NAME] = generate_mcp_config(
-                client_name=name,
-                transport=transport,
-            )
+            if headless:
+                mcp_servers[MCP_SERVER_NAME] = generate_headless_mcp_config(
+                    client_name=name,
+                )
+            else:
+                mcp_servers[MCP_SERVER_NAME] = generate_mcp_config(
+                    client_name=name,
+                    transport=transport,
+                )
 
         _write_config_file(config_path, config, is_toml=is_toml)
         if not quiet:
@@ -601,6 +632,48 @@ def _parse_client_targets(targets_str: str) -> list[str]:
 
 def _interactive_install(*, uninstall: bool, args):
     action = "uninstall" if uninstall else "install"
+
+    if not uninstall:
+        mode = interactive_choose(
+            [
+                "GUI Plugin Mode — Runs MCP through IDA GUI plugin",
+                "Headless idalib Mode — Runs standalone MCP server without GUI",
+            ],
+            "Select mode:",
+        )
+        if mode is None:
+            print("Cancelled.")
+            return
+        headless = mode.startswith("Headless")
+    else:
+        headless = False
+
+    if headless:
+        scope = _get_install_scope(args, interactive=True)
+        if scope is None:
+            print("Cancelled.")
+            return
+
+        items = _get_scope_selection_items(project=(scope == "project"))
+        if not items:
+            print(f"Unsupported platform: {sys.platform}")
+            return
+
+        selected = interactive_select(items, f"Select {scope} targets to {action}:")
+        if selected is None:
+            print("Cancelled.")
+            return
+
+        if selected:
+            install_mcp_servers(
+                transport="stdio",
+                uninstall=False,
+                only=selected,
+                project=(scope == "project"),
+                headless=True,
+            )
+        return
+
     transport = _get_install_transport(uninstall=uninstall, args=args, interactive=True)
     if transport is None:
         print("Cancelled.")
@@ -621,6 +694,7 @@ def _interactive_install(*, uninstall: bool, args):
         print("Cancelled.")
         return
 
+    install_ida_plugin(uninstall=uninstall, allow_ida_free=args.allow_ida_free)
     _apply_client_install(
         scope=scope,
         transport=transport,
@@ -630,9 +704,8 @@ def _interactive_install(*, uninstall: bool, args):
 
 
 def run_install_command(*, uninstall: bool, targets_str: str, args) -> None:
-    install_ida_plugin(uninstall=uninstall, allow_ida_free=args.allow_ida_free)
-
     if targets_str:
+        install_ida_plugin(uninstall=uninstall, allow_ida_free=args.allow_ida_free)
         _apply_client_install(
             scope=_get_install_scope(args, interactive=False),
             transport=_get_install_transport(
@@ -647,6 +720,7 @@ def run_install_command(*, uninstall: bool, targets_str: str, args) -> None:
         _interactive_install(uninstall=uninstall, args=args)
         return
 
+    install_ida_plugin(uninstall=uninstall, allow_ida_free=args.allow_ida_free)
     action = "installed" if not uninstall else "uninstalled"
     print(
         f"IDA plugin {action}. No TTY available for interactive client selection; "
