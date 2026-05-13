@@ -628,8 +628,13 @@ def main():
         # returned by MCP response, does NOT affect the actual socket
         # endpoint this server listens to
         set_download_base_url(f"http://{args.host}:{args.port}")
-    MCP_SERVER.serve(host=args.host, port=args.port, background=False,
-                     request_handler=IdaMcpHttpRequestHandler)
+    try:
+        MCP_SERVER.serve(host=args.host, port=args.port, background=False,
+                         request_handler=IdaMcpHttpRequestHandler)
+    finally:
+        logger.info("Server stopped, closing all IDA sessions...")
+        session_manager.close_all_sessions()
+        logger.info("All sessions closed.")
 
 
 if __name__ == "__main__":
